@@ -1,0 +1,733 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>NEBULA STAND — 2P Co-op Survival</title>
+<style>
+  html,body{margin:0;padding:0;background:#04060e;overflow:hidden;height:100%;
+    font-family:'Courier New',monospace;user-select:none;}
+  #cv{display:block;position:absolute;inset:0;}
+  .overlay{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;
+    flex-direction:column;background:rgba(2,4,12,0.82);z-index:10;color:#cfe;}
+  .hidden{display:none!important;}
+  h1{font-size:52px;letter-spacing:12px;margin:0 0 6px 0;color:#8ef;
+    text-shadow:0 0 24px #0af,0 0 60px #06f;}
+  .sub{color:#9ab;letter-spacing:3px;margin-bottom:24px;}
+  .cards{display:flex;gap:14px;margin:10px 0;}
+  .card{width:170px;background:linear-gradient(180deg,rgba(20,30,60,.9),rgba(8,12,28,.95));
+    border:1px solid #345;border-radius:8px;padding:10px 12px;cursor:pointer;
+    transition:transform .08s, box-shadow .08s;}
+  .card:hover{transform:translateY(-4px);box-shadow:0 0 18px rgba(80,200,255,.35);border-color:#6cf;}
+  .card.p2:hover{box-shadow:0 0 18px rgba(120,255,140,.35);border-color:#8f8;}
+  .card.dim{opacity:.35;cursor:default;}
+  .card.dim:hover{transform:none;box-shadow:none;}
+  .card .k{float:right;color:#fd6;font-weight:bold;}
+  .card .nm{font-weight:bold;font-size:15px;letter-spacing:1px;}
+  .card .st{font-size:11px;color:#9bc;line-height:1.6;margin-top:6px;white-space:pre-line;}
+  .card .sp{font-size:11px;color:#fda;margin-top:4px;}
+  .menuTitle{font-size:22px;letter-spacing:6px;margin-bottom:4px;}
+  .p1c{color:#6df;text-shadow:0 0 12px #08f;}
+  .p2c{color:#8f9;text-shadow:0 0 12px #0f6;}
+  .skipBtn{margin-top:14px;padding:8px 26px;background:#123;border:1px solid #456;color:#abc;
+    border-radius:6px;cursor:pointer;letter-spacing:2px;font-family:inherit;}
+  .skipBtn:hover{border-color:#8ac;color:#def;}
+  .small{font-size:12px;color:#789;margin-top:10px;letter-spacing:1px;}
+  .chart{font-size:13px;color:#bcd;line-height:1.9;text-align:center;margin:8px 0 18px 0;}
+  .chart b{color:#fd8;}
+  .big{font-size:30px;color:#fe9;letter-spacing:4px;text-shadow:0 0 20px #f80;}
+  .stats{font-size:16px;line-height:2;color:#acd;text-align:center;}
+  .press{margin-top:22px;font-size:15px;color:#8ef;animation:pulse 1.2s infinite;}
+  @keyframes pulse{0%,100%{opacity:.4}50%{opacity:1}}
+  .rosters{display:flex;gap:40px;margin-top:6px;}
+  .roster{font-size:12px;color:#9ab;line-height:1.8;text-align:left;}
+  .roster h3{margin:0 0 4px 0;font-size:14px;letter-spacing:2px;}
+</style>
+</head>
+<body>
+<canvas id="cv"></canvas>
+
+<!-- TITLE -->
+<div id="title" class="overlay">
+  <h1>NEBULA STAND</h1>
+  <div class="sub">TWO-COMMANDER CO-OP SURVIVAL &mdash; HOW LONG CAN YOU LAST?</div>
+  <div class="chart">
+    You never control units &mdash; you only <b>spawn</b> them. They fight on their own.<br>
+    When a commander can afford a unit, the game <b>pauses</b> for their choice.<br><br>
+    &#9889; <b>ENERGY</b> weapons: <b>+1</b> dmg vs SHIELDED &nbsp;/&nbsp; <b>&minus;1</b> vs HULL<br>
+    &#9881; <b>KINETIC</b> weapons: <b>+1</b> dmg vs HULL &nbsp;/&nbsp; <b>&minus;1</b> vs SHIELDED<br>
+    (minimum 1 damage &mdash; that's the whole combat table)
+  </div>
+  <div class="rosters">
+    <div class="roster"><h3 class="p1c">P1 &mdash; VANGUARD FLEET</h3>
+      Sleek shielded warships.<br>Fast, ranged, precise.<br>Bastion cruiser shields allies.</div>
+    <div class="roster"><h3 class="p2c">P2 &mdash; MERIDIAN HIVE</h3>
+      Cheap hardy bio-hulls.<br>Swarms, poison, healing.<br>Colossus anchors the line.</div>
+  </div>
+  <div class="press">[ PRESS SPACE TO DEPLOY ]</div>
+  <div class="small">Menus: keys 1&ndash;4 spawn &middot; S banks energy &middot; defend the station at all costs</div>
+</div>
+
+<!-- SPAWN MENU -->
+<div id="menu" class="overlay hidden" style="background:rgba(2,4,12,0.6);">
+  <div class="menuTitle" id="menuTitle"></div>
+  <div class="sub" id="menuEnergy"></div>
+  <div class="cards" id="cardRow"></div>
+  <button class="skipBtn" id="skipBtn">[S] HOLD &amp; BANK ENERGY</button>
+  <div class="small">energy keeps building if you wait &mdash; big units win late waves</div>
+</div>
+
+<!-- GAME OVER -->
+<div id="gameover" class="overlay hidden">
+  <div class="big">STATION LOST</div>
+  <div class="stats" id="goStats"></div>
+  <div class="press">[ PRESS R TO TRY AGAIN ]</div>
+</div>
+
+<script>
+"use strict";
+//==================== SETUP ====================
+const cv = document.getElementById('cv'), cx = cv.getContext('2d');
+let W=0,H=0;
+function resize(){ W=cv.width=innerWidth; H=cv.height=innerHeight; }
+addEventListener('resize',resize); resize();
+
+//==================== AUDIO ====================
+let AC=null, master=null, droneOn=false;
+function initAudio(){
+  if(AC) return;
+  AC = new (window.AudioContext||window.webkitAudioContext)();
+  master = AC.createGain(); master.gain.value=0.5; master.connect(AC.destination);
+  // ambient drone
+  const d1=AC.createOscillator(), d2=AC.createOscillator(), dg=AC.createGain(), lp=AC.createBiquadFilter();
+  d1.type='sawtooth'; d1.frequency.value=55; d2.type='sawtooth'; d2.frequency.value=55.6;
+  lp.type='lowpass'; lp.frequency.value=140; dg.gain.value=0.05;
+  const lfo=AC.createOscillator(), lg=AC.createGain();
+  lfo.frequency.value=0.07; lg.gain.value=40; lfo.connect(lg); lg.connect(lp.frequency);
+  d1.connect(lp); d2.connect(lp); lp.connect(dg); dg.connect(master);
+  d1.start(); d2.start(); lfo.start(); droneOn=true;
+}
+function env(g,t,a,peak,dec){ g.gain.setValueAtTime(0,t); g.gain.linearRampToValueAtTime(peak,t+a);
+  g.gain.exponentialRampToValueAtTime(0.001,t+a+dec); }
+function tone(freq,type,peak,dec,slideTo,slideT){
+  if(!AC)return; const t=AC.currentTime, o=AC.createOscillator(), g=AC.createGain();
+  o.type=type; o.frequency.setValueAtTime(freq,t);
+  if(slideTo) o.frequency.exponentialRampToValueAtTime(slideTo,t+(slideT||dec));
+  env(g,t,0.005,peak,dec); o.connect(g); g.connect(master); o.start(t); o.stop(t+dec+0.1);
+}
+function noise(peak,dec,fFrom,fTo){
+  if(!AC)return; const t=AC.currentTime, len=AC.sampleRate*(dec+0.05);
+  const buf=AC.createBuffer(1,len,AC.sampleRate), ch=buf.getChannelData(0);
+  for(let i=0;i<len;i++) ch[i]=Math.random()*2-1;
+  const src=AC.createBufferSource(); src.buffer=buf;
+  const f=AC.createBiquadFilter(); f.type='lowpass';
+  f.frequency.setValueAtTime(fFrom,t); f.frequency.exponentialRampToValueAtTime(Math.max(40,fTo),t+dec);
+  const g=AC.createGain(); env(g,t,0.005,peak,dec);
+  src.connect(f); f.connect(g); g.connect(master); src.start(t);
+}
+const sfx = {
+  laser(){ tone(900,'square',0.10,0.12,220,0.10); },
+  spit(){ tone(300,'sawtooth',0.09,0.15,120,0.12); },
+  hit(){ noise(0.12,0.08,1200,300); },
+  boom(){ noise(0.35,0.5,900,60); tone(90,'sine',0.25,0.4,40,0.35); },
+  bigboom(){ noise(0.5,0.9,700,40); tone(60,'sine',0.4,0.8,30,0.7); },
+  spawnShip(){ tone(440,'triangle',0.15,0.2,880,0.18); tone(660,'sine',0.1,0.25,1320,0.2); },
+  spawnBio(){ tone(220,'sine',0.15,0.25,110,0.2); tone(330,'triangle',0.08,0.3,165,0.25); },
+  heal(){ tone(1046,'sine',0.07,0.2,1568,0.15); },
+  menu(){ tone(523,'sine',0.12,0.15); tone(784,'sine',0.09,0.22); },
+  pick(){ tone(659,'triangle',0.12,0.1,988,0.08); },
+  skip(){ tone(392,'sine',0.1,0.15,262,0.12); },
+  alarm(){ tone(880,'square',0.09,0.18,440,0.15); },
+  wave(){ tone(147,'sawtooth',0.14,0.5,98,0.45); noise(0.08,0.4,400,80); },
+  stationHit(){ noise(0.2,0.2,600,120); tone(140,'square',0.12,0.2,70,0.18); },
+};
+
+//==================== HELPERS ====================
+const TAU=Math.PI*2;
+const rnd=(a,b)=>a+Math.random()*(b-a);
+const irnd=(a,b)=>Math.floor(rnd(a,b+1));
+const dist=(a,b)=>Math.hypot(a.x-b.x,a.y-b.y);
+const clamp=(v,a,b)=>v<a?a:(v>b?b:v);
+
+// combat table: dtype 'E'|'K' vs armor 'S'|'H'  ->  ±1
+function tmod(dt,ar){
+  if(dt==='E') return ar==='S'? 1 : -1;
+  return ar==='H'? 1 : -1;   // kinetic
+}
+
+//==================== UNIT DEFINITIONS ====================
+// r=radius, rng=attack range, spd px/s, rate=sec/attack, sight=aggro radius
+const P1DEFS = {
+  dart:   {name:'DART',    cost:3, hp:6,  dmg:2, dt:'K', ar:'S', rng:34,  spd:150, rate:0.5, r:8, sight:260,
+           sp:'Fast interceptor', shape:'dart'},
+  lancer: {name:'LANCER',  cost:5, hp:8,  dmg:3, dt:'E', ar:'S', rng:150, spd:85,  rate:1.0, r:10, sight:280,
+           sp:'Long-range beam frigate', shape:'lancer'},
+  bastion:{name:'BASTION', cost:8, hp:26, dmg:2, dt:'K', ar:'S', rng:60,  spd:55,  rate:0.9, r:14, sight:240,
+           sp:'AURA: allies within 100 take −1 dmg', shape:'bastion', aura:100},
+  nova:   {name:'NOVA',    cost:12,hp:10, dmg:5, dt:'E', ar:'S', rng:130, spd:60,  rate:2.2, r:12, sight:280,
+           sp:'SPLASH: hits all foes within 55 of target', shape:'nova', splash:55},
+};
+const P2DEFS = {
+  wisp:    {name:'WISP',    cost:2, hp:4,  dmg:1, dt:'K', ar:'H', rng:26,  spd:170, rate:0.4, r:6, sight:260,
+            sp:'Dirt-cheap swarm biter', shape:'wisp'},
+  stinger: {name:'STINGER', cost:5, hp:6,  dmg:2, dt:'E', ar:'H', rng:130, spd:80,  rate:1.0, r:9, sight:270,
+            sp:'POISON: +1 dmg/s for 3s (stacks refresh)', shape:'stinger', poison:3},
+  mender:  {name:'MENDER',  cost:7, hp:12, dmg:0, dt:'E', ar:'H', rng:110, spd:75,  rate:1.0, r:10, sight:700,
+            sp:'HEALS most-hurt nearby ally +2/s', shape:'mender', heal:2},
+  colossus:{name:'COLOSSUS',cost:14,hp:44, dmg:4, dt:'K', ar:'H', rng:40,  spd:45,  rate:1.1, r:17, sight:240,
+            sp:'CLEAVE: also hits foes within 45 of target', shape:'colossus', splash:45},
+};
+// enemies (base stats; scaled by wave)
+const EDEFS = {
+  skitter: {name:'Skitterer', hp:5,  dmg:2, dt:'K', ar:'H', rng:26,  spd:120, rate:0.7, r:8,  bounty:1, shape:'skitter'},
+  spitter: {name:'Spitter',   hp:6,  dmg:2, dt:'E', ar:'S', rng:140, spd:65,  rate:1.2, r:9,  bounty:2, shape:'spitter'},
+  brute:   {name:'Brute',     hp:22, dmg:4, dt:'K', ar:'H', rng:36,  spd:50,  rate:1.2, r:14, bounty:3, shape:'brute'},
+  warper:  {name:'Warper',    hp:8,  dmg:3, dt:'E', ar:'S', rng:30,  spd:95,  rate:0.8, r:9,  bounty:3, shape:'warper', warp:true},
+  leviathan:{name:'LEVIATHAN',hp:70, dmg:6, dt:'K', ar:'H', rng:60,  spd:32,  rate:1.4, r:26, bounty:12, shape:'levi', splash:50},
+};
+
+//==================== GAME STATE ====================
+let game=null;
+function newGame(){
+  return {
+    running:false, over:false, time:0, wave:0, waveTimer:6, kills:0,
+    station:{x:0,y:0,hp:100,maxhp:100,r:38, hitFlash:0},
+    units:[], enemies:[], projs:[], parts:[], texts:[],
+    shake:0, alarmT:0,
+    players:[
+      {id:0, name:'VANGUARD', defs:P1DEFS, energy:5, income:0.75, cool:2, coolMax:7,
+       col:'#55ccff', spawnY:()=>H*0.32},
+      {id:1, name:'HIVE',     defs:P2DEFS, energy:4, income:0.85, cool:3.5, coolMax:7,
+       col:'#66ee88', spawnY:()=>H*0.68},
+    ],
+    menuFor:null, menuQueue:[],
+  };
+}
+
+//==================== SPAWNING ====================
+function makeUnit(def,owner,x,y){
+  return {def, owner, x, y, hp:def.hp, maxhp:def.hp,
+    vx:0, vy:0, ang:0, cd:rnd(0,def.rate*0.5), target:null,
+    poisonT:0, poisonTick:0, flash:0, pulse:rnd(0,TAU), enemy:false};
+}
+function makeEnemy(key,wave){
+  const d=EDEFS[key];
+  const hpMul = 1 + wave*0.13;
+  const dmgAdd = Math.floor(wave/4);
+  const e = {def:d, x:W+30, y:rnd(H*0.12,H*0.88), hp:Math.round(d.hp*hpMul),
+    maxhp:Math.round(d.hp*hpMul), dmg:d.dmg+dmgAdd,
+    vx:0,vy:0,ang:Math.PI, cd:rnd(0.3,d.rate), target:null,
+    poisonT:0, poisonTick:0, flash:0, pulse:rnd(0,TAU), enemy:true};
+  if(wave>=6 && Math.random()<0.35) e.y = Math.random()<0.5? -20 : H+20, e.x=rnd(W*0.55,W*0.95);
+  return e;
+}
+function spawnWave(){
+  const g=game; g.wave++;
+  sfx.wave();
+  addText(W*0.5,H*0.18,'WAVE '+g.wave,'#ffcc66',26,2.2);
+  const w=g.wave;
+  let n = 3 + Math.floor(w*1.3);
+  const pool=['skitter'];
+  if(w>=2) pool.push('spitter');
+  if(w>=4) pool.push('brute','skitter','spitter');
+  if(w>=6) pool.push('warper');
+  for(let i=0;i<n;i++){
+    const e=makeEnemy(pool[irnd(0,pool.length-1)],w);
+    e.x += rnd(0,120);
+    g.enemies.push(e);
+  }
+  if(w%5===0){
+    const b=makeEnemy('leviathan',w); b.y=H*0.5; g.enemies.push(b);
+    addText(W*0.5,H*0.26,'!! LEVIATHAN !!','#ff5544',22,2.5);
+    sfx.alarm();
+  }
+}
+
+//==================== EFFECTS ====================
+function addText(x,y,str,col,size,life){ game.texts.push({x,y,str,col,size:size||13,life:life||0.9,t:0}); }
+function burst(x,y,col,n,pow){
+  for(let i=0;i<n;i++){
+    const a=rnd(0,TAU), s=rnd(20,pow||120);
+    game.parts.push({x,y,vx:Math.cos(a)*s,vy:Math.sin(a)*s,col,life:rnd(0.3,0.8),t:0,r:rnd(1,3)});
+  }
+}
+function trail(x,y,col){
+  game.parts.push({x:x+rnd(-2,2),y:y+rnd(-2,2),vx:rnd(-8,8),vy:rnd(-8,8),col,life:0.35,t:0,r:rnd(1,2.2)});
+}
+
+//==================== COMBAT ====================
+function bastionAura(u){ // -1 dmg if near a friendly bastion (not self-stacking; one is enough)
+  for(const a of game.units){
+    if(a.def.aura && a!==u && dist(a,u)<=a.def.aura) return 1;
+    if(a.def.aura && a===u) return 1;
+  }
+  return 0;
+}
+function dealDamage(src, tgt, base, dt){
+  let dmg = base + tmod(dt, tgt.def.ar);
+  if(!tgt.enemy) dmg -= bastionAura(tgt);
+  dmg = Math.max(1,dmg);
+  tgt.hp -= dmg; tgt.flash=0.12;
+  addText(tgt.x+rnd(-6,6), tgt.y-14, ''+dmg, tgt.enemy?'#ffd7a0':'#ff8080', 12, 0.6);
+  sfx.hit();
+  if(tgt.hp<=0) killThing(tgt);
+}
+function applyPoison(tgt,sec){ tgt.poisonT=Math.max(tgt.poisonT,sec); }
+function killThing(t){
+  const g=game;
+  if(t.enemy){
+    g.kills++;
+    burst(t.x,t.y,'#ff9944',14,150); burst(t.x,t.y,'#ffe0a0',6,60);
+    (t.def.shape==='levi') ? (sfx.bigboom(), g.shake=Math.max(g.shake,10)) : sfx.boom();
+    const b=t.def.bounty;
+    for(const p of g.players){ p.energy += b/2; }
+    addText(t.x,t.y-20,'+'+(b/2)+'⚡ each','#ffee88',12,1);
+    g.enemies.splice(g.enemies.indexOf(t),1);
+  }else{
+    burst(t.x,t.y, t.owner===0?'#66ccff':'#88ff99', 12, 120);
+    sfx.boom();
+    g.units.splice(g.units.indexOf(t),1);
+  }
+}
+
+//==================== AI / UPDATE ====================
+function nearestOf(from,list,maxD){
+  let best=null,bd=maxD||1e9;
+  for(const o of list){ const d=dist(from,o); if(d<bd){bd=d;best=o;} }
+  return best;
+}
+function steer(u,tx,ty,spd,dt){
+  const dx=tx-u.x, dy=ty-u.y, d=Math.hypot(dx,dy)||1;
+  u.vx += (dx/d*spd - u.vx)*Math.min(1,dt*4);
+  u.vy += (dy/d*spd - u.vy)*Math.min(1,dt*4);
+  u.x += u.vx*dt; u.y += u.vy*dt;
+  if(Math.hypot(u.vx,u.vy)>8) u.ang = Math.atan2(u.vy,u.vx);
+}
+function separate(u,list,dt){
+  for(const o of list){ if(o===u)continue;
+    const d=dist(u,o), min=(u.def.r+o.def.r)*1.1;
+    if(d<min && d>0.01){ const px=(u.x-o.x)/d,py=(u.y-o.y)/d,f=(min-d)*3;
+      u.x+=px*f*dt*10; u.y+=py*f*dt*10; }
+  }
+}
+function fireProj(src,tgt,base,dt_,col,poison,splash){
+  game.projs.push({x:src.x,y:src.y,tgt,base,dt:dt_,col,poison:poison||0,splash:splash||0,
+    spd:420,fromEnemy:!!src.enemy});
+  src.enemy? sfx.spit() : sfx.laser();
+}
+
+function updateUnit(u,dt){
+  const g=game, d=u.def;
+  u.cd-=dt; u.flash-=dt; u.pulse+=dt*4;
+  // poison
+  if(u.poisonT>0){ u.poisonT-=dt; u.poisonTick-=dt;
+    if(u.poisonTick<=0){ u.poisonTick=1; u.hp-=1; u.flash=0.1;
+      addText(u.x,u.y-14,'1','#bbff66',11,0.5);
+      if(u.hp<=0){ killThing(u); return; } } }
+
+  if(d.heal){ // mender behavior
+    let best=null,worst=1;
+    for(const a of g.units){ if(a===u)continue;
+      const frac=a.hp/a.maxhp;
+      if(frac<worst && dist(u,a)<420){ worst=frac; best=a; } }
+    if(best){
+      if(dist(u,best)>d.rng*0.8) steer(u,best.x,best.y,d.spd,dt);
+      else { steer(u,best.x+Math.cos(u.pulse)*30,best.y+Math.sin(u.pulse)*30,d.spd*0.4,dt);
+        if(u.cd<=0){ u.cd=1/d.heal;
+          best.hp=Math.min(best.maxhp,best.hp+1);
+          addText(best.x,best.y-16,'+1','#88ffcc',11,0.6); sfx.heal();
+          game.parts.push({x:best.x,y:best.y,vx:0,vy:-30,col:'#88ffcc',life:0.5,t:0,r:2}); } }
+    } else {
+    }
+//    } else {
+//      steer(u, g.station.x+120, u.owner===0?H*0.35:H*0.65, d.spd*0.6, dt);
+//    }
+    separate(u,g.units,dt); clampPos(u); return;
+  }
+
+  // combat unit
+  const tgt = nearestOf(u,g.enemies);
+  if(tgt){
+    const dd=dist(u,tgt);
+    if(dd > d.rng) steer(u,tgt.x,tgt.y,d.spd,dt);
+    else {
+      steer(u, u.x+Math.cos(u.pulse*0.5)*8, u.y+Math.sin(u.pulse*0.5)*8, d.spd*0.15, dt);
+      u.ang = Math.atan2(tgt.y-u.y, tgt.x-u.x);
+      if(u.cd<=0){ u.cd=d.rate;
+        if(d.rng>60) fireProj; // (no-op guard)
+        if(d.rng>60) fireProj(u,tgt,d.dmg,d.dt,u.owner===0?'#77ddff':'#aaffaa',d.poison||0,d.splash||0);
+        else { meleeHit(u,tgt,d.dmg,d.dt,d.splash||0); }
+      }
+    }
+  } else {
+    // idle: patrol near station
+    const gx=g.station.x+150, gy=u.owner===0?H*0.35:H*0.65;
+    if(dist(u,{x:gx,y:gy})>60) steer(u,gx,gy,d.spd*0.5,dt);
+    else steer(u, gx+Math.cos(u.pulse*0.3)*50, gy+Math.sin(u.pulse*0.3)*50, d.spd*0.3, dt);
+  }
+  separate(u,g.units,dt); clampPos(u);
+}
+function meleeHit(src,tgt,base,dtp,splash){
+  burst((src.x+tgt.x)/2,(src.y+tgt.y)/2, src.enemy?'#ff6644':'#ffffff', 4, 60);
+  dealDamage(src,tgt,base,dtp);
+  if(src.def && src.def.poison && !src.enemy) applyPoison(tgt,src.def.poison);
+  if(splash){
+    const list = src.enemy? game.units : game.enemies;
+    for(const o of [...list]){ if(o!==tgt && dist(tgt,o)<=splash) dealDamage(src,o,Math.max(1,base-1),dtp); }
+  }
+}
+function clampPos(o){ o.x=clamp(o.x,15,W-15); o.y=clamp(o.y,15,H-15); }
+
+function updateEnemy(e,dt){
+  const g=game, d=e.def;
+  e.cd-=dt; e.flash-=dt; e.pulse+=dt*4;
+  if(e.poisonT>0){ e.poisonT-=dt; e.poisonTick-=dt;
+    if(e.poisonTick<=0){ e.poisonTick=1; e.hp-=1; e.flash=0.1;
+      addText(e.x,e.y-14,'1','#bbff66',11,0.5);
+      if(e.hp<=0){ killThing(e); return; } } }
+  // warper: teleport once when past 70% of screen
+  if(d.warp && !e.warped && e.x < W*0.75){
+    e.warped=true;
+    burst(e.x,e.y,'#cc66ff',12,100);
+    e.x = g.station.x + rnd(60,140)*(Math.random()<0.5?1:-0.3);
+    e.y = g.station.y + rnd(-120,120);
+    burst(e.x,e.y,'#cc66ff',16,120);
+    tone(1200,'sine',0.12,0.25,300,0.2);
+  }
+  const tgt = nearestOf(e,g.units,230) || g.station;
+  const isStation = (tgt===g.station);
+  const dd = dist(e,tgt) - (isStation? g.station.r : 0);
+  if(dd > d.rng) steer(e,tgt.x,tgt.y,d.spd,dt);
+  else {
+    e.ang=Math.atan2(tgt.y-e.y,tgt.x-e.x);
+    if(e.cd<=0){ e.cd=d.rate;
+      if(isStation){
+        g.station.hp -= e.dmg; g.station.hitFlash=0.25; g.shake=Math.max(g.shake,4);
+        addText(g.station.x+rnd(-20,20),g.station.y-40,''+e.dmg,'#ff5555',15,0.8);
+        sfx.stationHit();
+        if(g.station.hp<=0) endGame();
+      } else if(d.rng>60){
+        fireProj(e,tgt,e.dmg,d.dt,'#ff7755',0,d.splash||0);
+      } else meleeHit(e,tgt,e.dmg,d.dt,d.splash||0);
+    }
+  }
+  separate(e,g.enemies,dt); clampPos(e);
+}
+
+function updateProjs(dt){
+  const g=game;
+  for(let i=g.projs.length-1;i>=0;i--){
+    const p=g.projs[i], t=p.tgt;
+    const alive = t && (t.hp===undefined? t.hp : t.hp>0) &&
+      ((p.fromEnemy? g.units : g.enemies).includes(t) || t===g.station);
+    if(!alive){ g.projs.splice(i,1); continue; }
+    const dx=t.x-p.x, dy=t.y-p.y, d=Math.hypot(dx,dy);
+    trail(p.x,p.y,p.col);
+    if(d < p.spd*dt + 6){
+      // impact
+      burst(t.x,t.y,p.col,5,70);
+      const src = {enemy:p.fromEnemy, def:{}};
+      dealDamage(src,t,p.base,p.dt);
+      if(p.poison && t.hp>0) applyPoison(t,p.poison);
+      if(p.splash){
+        const list = p.fromEnemy? g.units : g.enemies;
+        burst(t.x,t.y,'#ffee99',10,110);
+        for(const o of [...list]) if(o!==t && dist(t,o)<=p.splash) dealDamage(src,o,Math.max(1,p.base-1),p.dt);
+      }
+      g.projs.splice(i,1);
+    } else { p.x+=dx/d*p.spd*dt; p.y+=dy/d*p.spd*dt; }
+  }
+}
+
+//==================== SPAWN MENU ====================
+const menuEl=document.getElementById('menu'), cardRow=document.getElementById('cardRow'),
+      menuTitle=document.getElementById('menuTitle'), menuEnergy=document.getElementById('menuEnergy'),
+      skipBtn=document.getElementById('skipBtn');
+
+function minCost(p){ return Math.min(...Object.values(p.defs).map(d=>d.cost)); }
+function tryOpenMenus(){
+  const g=game;
+  if(g.menuFor!==null || g.over) return;
+  for(const p of g.players){
+    if(p.cool<=0 && p.energy>=minCost(p) && !g.menuQueue.includes(p)) g.menuQueue.push(p);
+  }
+  if(g.menuQueue.length) openMenu(g.menuQueue.shift());
+}
+function openMenu(p){
+  const g=game; g.menuFor=p; sfx.menu();
+  menuTitle.textContent = `PLAYER ${p.id+1} — ${p.name} — CHOOSE DEPLOYMENT`;
+  menuTitle.className = 'menuTitle ' + (p.id===0?'p1c':'p2c');
+  menuEnergy.textContent = `⚡ ENERGY: ${Math.floor(p.energy)}`;
+  cardRow.innerHTML='';
+  const keys=Object.keys(p.defs);
+  keys.forEach((k,i)=>{
+    const d=p.defs[k], afford=p.energy>=d.cost;
+    const c=document.createElement('div');
+    c.className='card'+(p.id===1?' p2':'')+(afford?'':' dim');
+    c.innerHTML=`<span class="k">⚡${d.cost}</span><div class="nm">[${i+1}] ${d.name}</div>
+      <div class="st">HP ${d.hp} · DMG ${d.dmg} ${d.dt==='E'?'⚡ENERGY':'⚙KINETIC'}
+RNG ${d.rng>60?'ranged':'melee'} · SPD ${d.spd>=120?'fast':d.spd>=70?'med':'slow'}
+Armor: ${d.ar==='S'?'SHIELDED':'HULL'}</div>
+      <div class="sp">${d.sp}</div>`;
+    if(afford) c.onclick=()=>pickUnit(p,k);
+    cardRow.appendChild(c);
+  });
+  menuEl.classList.remove('hidden');
+}
+function pickUnit(p,k){
+  const g=game, d=p.defs[k];
+  if(p.energy<d.cost) return;
+  p.energy-=d.cost; p.cool=p.coolMax;
+  const x=g.station.x+rnd(30,90), y=p.spawnY()+rnd(-50,50);
+  g.units.push(makeUnit(d,p.id,x,y));
+  burst(x,y,p.col,12,90);
+  p.id===0? sfx.spawnShip() : sfx.spawnBio();
+  addText(x,y-24,d.name+' DEPLOYED',p.col,12,1);
+  closeMenu();
+}
+function skipMenu(){
+  const g=game, p=g.menuFor; if(!p)return;
+  p.cool=p.coolMax*0.7; sfx.skip(); closeMenu();
+}
+function closeMenu(){
+  const g=game; g.menuFor=null; menuEl.classList.add('hidden');
+  if(g.menuQueue.length) setTimeout(()=>{ if(!game.over) openMenu(game.menuQueue.shift()); },150);
+}
+skipBtn.onclick=skipMenu;
+
+//==================== MAIN LOOP ====================
+let last=0;
+function loop(ts){
+  const dt=Math.min(0.05,(ts-last)/1000||0.016); last=ts;
+  const g=game;
+  if(g && g.running && !g.over && g.menuFor===null){
+    g.time+=dt;
+    g.waveTimer-=dt;
+    if(g.waveTimer<=0){ spawnWave(); g.waveTimer=Math.max(10,18-g.wave*0.3); }
+    for(const p of g.players){ p.energy+=p.income*dt; p.cool-=dt; }
+    for(const u of [...g.units]) updateUnit(u,dt);
+    for(const e of [...g.enemies]) updateEnemy(e,dt);
+    updateProjs(dt);
+    // particles & texts
+    for(let i=g.parts.length-1;i>=0;i--){ const p=g.parts[i]; p.t+=dt;
+      p.x+=p.vx*dt; p.y+=p.vy*dt; p.vx*=0.96; p.vy*=0.96;
+      if(p.t>p.life) g.parts.splice(i,1); }
+    for(let i=g.texts.length-1;i>=0;i--){ const t=g.texts[i]; t.t+=dt; t.y-=18*dt;
+      if(t.t>t.life) g.texts.splice(i,1); }
+    g.shake*=Math.pow(0.02,dt); g.station.hitFlash-=dt;
+    // low-hp alarm
+    if(g.station.hp<30){ g.alarmT-=dt; if(g.alarmT<=0){ g.alarmT=1.2; sfx.alarm(); } }
+    tryOpenMenus();
+  }
+  render(dt);
+  requestAnimationFrame(loop);
+}
+
+//==================== RENDER ====================
+const stars=[];
+for(let i=0;i<160;i++) stars.push({x:Math.random(),y:Math.random(),z:rnd(0.3,1),tw:rnd(0,TAU)});
+let bgT=0;
+function render(dt){
+  bgT+=dt;
+  const g=game;
+  cx.setTransform(1,0,0,1,0,0);
+  // bg
+  const grad=cx.createLinearGradient(0,0,W,H);
+  grad.addColorStop(0,'#050816'); grad.addColorStop(0.5,'#0a0e22'); grad.addColorStop(1,'#04101a');
+  cx.fillStyle=grad; cx.fillRect(0,0,W,H);
+  // nebula blobs
+  for(let i=0;i<3;i++){
+    const nx=W*(0.25+i*0.3)+Math.sin(bgT*0.05+i)*40, ny=H*(0.3+((i*37)%40)/100);
+    const r=280+i*90;
+    const ng=cx.createRadialGradient(nx,ny,0,nx,ny,r);
+    ng.addColorStop(0, i===1?'rgba(80,40,140,0.10)':'rgba(20,80,140,0.08)');
+    ng.addColorStop(1,'rgba(0,0,0,0)');
+    cx.fillStyle=ng; cx.fillRect(nx-r,ny-r,r*2,r*2);
+  }
+  // stars
+  for(const s of stars){
+    const sx=((s.x*W - bgT*6*s.z)%W+W)%W, sy=s.y*H;
+    const a=0.3+0.7*Math.abs(Math.sin(s.tw+bgT*s.z));
+    cx.fillStyle=`rgba(200,220,255,${a*s.z*0.8})`;
+    cx.fillRect(sx,sy,s.z*1.8,s.z*1.8);
+  }
+  if(!g) return;
+  // shake
+  if(g.shake>0.3) cx.translate(rnd(-g.shake,g.shake),rnd(-g.shake,g.shake));
+
+  drawStation(g.station);
+  for(const p of g.parts){
+    const a=1-p.t/p.life;
+    cx.globalAlpha=a; cx.fillStyle=p.col;
+    cx.beginPath(); cx.arc(p.x,p.y,p.r*a+0.5,0,TAU); cx.fill();
+  }
+  cx.globalAlpha=1;
+  for(const pr of g.projs){
+    cx.shadowColor=pr.col; cx.shadowBlur=10; cx.fillStyle=pr.col;
+    cx.beginPath(); cx.arc(pr.x,pr.y,3,0,TAU); cx.fill(); cx.shadowBlur=0;
+  }
+  for(const u of g.units) drawUnit(u);
+  for(const e of g.enemies) drawUnit(e);
+  for(const t of g.texts){
+    cx.globalAlpha=1-Math.pow(t.t/t.life,2);
+    cx.fillStyle=t.col; cx.font=`bold ${t.size}px Courier New`; cx.textAlign='center';
+    cx.fillText(t.str,t.x,t.y); cx.globalAlpha=1;
+  }
+  cx.setTransform(1,0,0,1,0,0);
+  drawHUD();
+}
+function drawStation(s){
+  const t=bgT;
+  cx.save(); cx.translate(s.x,s.y);
+  cx.shadowColor='#4488ff'; cx.shadowBlur=25;
+  // ring
+  cx.strokeStyle = s.hitFlash>0? '#ff6666' : '#5599dd';
+  cx.lineWidth=3; cx.beginPath(); cx.arc(0,0,s.r,0,TAU); cx.stroke();
+  cx.rotate(t*0.3);
+  cx.strokeStyle='#88bbee'; cx.lineWidth=1.5;
+  cx.beginPath(); cx.arc(0,0,s.r+8,0.3,2.2); cx.stroke();
+  cx.beginPath(); cx.arc(0,0,s.r+8,3.4,5.3); cx.stroke();
+  cx.rotate(-t*0.55);
+  // core
+  cx.fillStyle=s.hitFlash>0?'#ffaaaa':'#aaddff';
+  for(let i=0;i<6;i++){ cx.rotate(TAU/6);
+    cx.fillRect(s.r*0.35,-3,s.r*0.4,6); }
+  cx.beginPath(); cx.arc(0,0,s.r*0.3+Math.sin(t*3)*2,0,TAU); cx.fill();
+  cx.restore(); cx.shadowBlur=0;
+  // hp bar
+  cx.fillStyle='#223'; cx.fillRect(s.x-45,s.y+s.r+14,90,7);
+  const frac=Math.max(0,s.hp/s.maxhp);
+  cx.fillStyle = frac>0.5?'#55ddff':frac>0.25?'#ffcc44':'#ff5544';
+  cx.fillRect(s.x-45,s.y+s.r+14,90*frac,7);
+}
+function drawUnit(u){
+  const d=u.def, col = u.enemy? '#ff6644' : (u.owner===0?'#66ccff':'#77ee88');
+  const glow = u.enemy? '#ff3300' : (u.owner===0?'#0088ff':'#00cc44');
+  cx.save(); cx.translate(u.x,u.y); cx.rotate(u.ang);
+  cx.shadowColor=glow; cx.shadowBlur=12;
+  cx.fillStyle = u.flash>0? '#ffffff': col;
+  cx.strokeStyle = cx.fillStyle; cx.lineWidth=1.5;
+  const r=d.r;
+  switch(d.shape){
+    case 'dart': tri(r*1.4,r*0.8); break;
+    case 'lancer': cx.fillRect(-r,-r*0.35,r*2,r*0.7); tri2(r); break;
+    case 'bastion': hex(r); cx.globalAlpha=0.13; cx.beginPath();
+      cx.arc(0,0,d.aura,0,TAU); cx.fillStyle=col; cx.fill(); cx.globalAlpha=1; break;
+    case 'nova': diamond(r); cx.beginPath(); cx.arc(0,0,r*0.4,0,TAU);
+      cx.fillStyle='#ffee99'; cx.fill(); break;
+    case 'wisp': blob(r,3,u.pulse); break;
+    case 'stinger': blob(r,5,u.pulse); spike(r); break;
+    case 'mender': cx.beginPath(); cx.arc(0,0,r,0,TAU); cx.fill();
+      cx.fillStyle='#eaffff'; cx.fillRect(-r*0.55,-2,r*1.1,4); cx.fillRect(-2,-r*0.55,4,r*1.1); break;
+    case 'colossus': blob(r,7,u.pulse*0.5); cx.fillStyle='#cfffd8';
+      cx.beginPath(); cx.arc(0,0,r*0.35,0,TAU); cx.fill(); break;
+    case 'skitter': tri(r*1.3,r); break;
+    case 'spitter': blob(r,4,u.pulse); break;
+    case 'brute': hex(r); break;
+    case 'warper': diamond(r); break;
+    case 'levi': blob(r,8,u.pulse*0.4); cx.fillStyle='#ffcc88';
+      cx.beginPath(); cx.arc(r*0.3,0,r*0.25,0,TAU); cx.fill(); break;
+  }
+  cx.restore(); cx.shadowBlur=0;
+  // engine trail
+  if(Math.hypot(u.vx,u.vy)>30 && Math.random()<0.5)
+    trail(u.x-Math.cos(u.ang)*d.r, u.y-Math.sin(u.ang)*d.r, u.enemy?'#ff8855':(u.owner===0?'#55aaff':'#66dd88'));
+  // hp bar (if damaged)
+  if(u.hp<u.maxhp){
+    const w=d.r*2.2;
+    cx.fillStyle='rgba(0,0,0,0.6)'; cx.fillRect(u.x-w/2,u.y-d.r-9,w,4);
+    cx.fillStyle = u.enemy?'#ff6655':'#66ff88';
+    cx.fillRect(u.x-w/2,u.y-d.r-9,w*Math.max(0,u.hp/u.maxhp),4);
+  }
+  if(u.poisonT>0){ cx.fillStyle='#aaff44';
+    cx.beginPath(); cx.arc(u.x,u.y-d.r-14,2.5,0,TAU); cx.fill(); }
+}
+function tri(l,w){ cx.beginPath(); cx.moveTo(l,0); cx.lineTo(-l*0.6,-w); cx.lineTo(-l*0.3,0);
+  cx.lineTo(-l*0.6,w); cx.closePath(); cx.fill(); }
+function tri2(r){ cx.beginPath(); cx.moveTo(r*1.6,0); cx.lineTo(r*0.7,-r*0.6); cx.lineTo(r*0.7,r*0.6);
+  cx.closePath(); cx.fill(); }
+function hex(r){ cx.beginPath(); for(let i=0;i<6;i++){ const a=i/6*TAU;
+  i?cx.lineTo(Math.cos(a)*r,Math.sin(a)*r):cx.moveTo(r,0);} cx.closePath(); cx.fill(); }
+function diamond(r){ cx.beginPath(); cx.moveTo(r*1.3,0); cx.lineTo(0,-r); cx.lineTo(-r*1.3,0);
+  cx.lineTo(0,r); cx.closePath(); cx.fill(); }
+function blob(r,n,ph){ cx.beginPath();
+  for(let i=0;i<=24;i++){ const a=i/24*TAU, rr=r*(1+0.18*Math.sin(a*n+ph));
+    i?cx.lineTo(Math.cos(a)*rr,Math.sin(a)*rr):cx.moveTo(rr*Math.cos(a),rr*Math.sin(a)); }
+  cx.closePath(); cx.fill(); }
+function spike(r){ for(let i=0;i<3;i++){ const a=(i-1)*0.5;
+  cx.beginPath(); cx.moveTo(Math.cos(a)*r,Math.sin(a)*r);
+  cx.lineTo(Math.cos(a)*r*1.7,Math.sin(a)*r*1.7); cx.stroke(); } }
+
+function drawHUD(){
+  const g=game;
+  cx.textAlign='left'; cx.font='bold 15px Courier New';
+  // P1
+  cx.fillStyle='#66ccff';
+  cx.fillText(`P1 VANGUARD  ⚡${Math.floor(g.players[0].energy)}`,16,H-40);
+  drawCool(16,H-30,g.players[0]);
+  // P2
+  cx.fillStyle='#77ee88';
+  cx.fillText(`P2 HIVE  ⚡${Math.floor(g.players[1].energy)}`,16,H-70);
+  drawCool(16,H-60,g.players[1]);
+  // top center
+  cx.textAlign='center'; cx.fillStyle='#cde';
+  const m=Math.floor(g.time/60), s=Math.floor(g.time%60);
+  cx.font='bold 22px Courier New';
+  cx.fillText(`⏱ ${m}:${s<10?'0':''}${s}`, W/2, 30);
+  cx.font='13px Courier New'; cx.fillStyle='#89a';
+  cx.fillText(`WAVE ${g.wave}  ·  KILLS ${g.kills}  ·  STATION ${Math.max(0,g.station.hp)}/${g.station.maxhp}`, W/2, 50);
+  if(g.station.hp<30 && Math.sin(bgT*8)>0){
+    cx.fillStyle='#ff4444'; cx.font='bold 16px Courier New';
+    cx.fillText('⚠ STATION CRITICAL ⚠', W/2, 72);
+  }
+}
+function drawCool(x,y,p){
+  cx.fillStyle='#123'; cx.fillRect(x,y,140,5);
+  const f = 1 - clamp(p.cool/p.coolMax,0,1);
+  cx.fillStyle = p.col; cx.fillRect(x,y,140*f,5);
+}
+
+//==================== FLOW ====================
+function startGame(){
+  game=newGame();
+  game.station.x=W*0.16; game.station.y=H*0.5;
+  game.running=true;
+  document.getElementById('title').classList.add('hidden');
+  document.getElementById('gameover').classList.add('hidden');
+  initAudio();
+  if(AC && AC.state==='suspended') AC.resume();
+  addText(W*0.5,H*0.4,'DEFEND THE STATION','#aaddff',24,2.5);
+}
+function endGame(){
+  const g=game; g.over=true;
+  g.menuFor=null; g.menuQueue=[]; menuEl.classList.add('hidden');
+  sfx.bigboom(); g.shake=18;
+  burst(g.station.x,g.station.y,'#ffaa44',60,300);
+  burst(g.station.x,g.station.y,'#ff5533',40,200);
+  const m=Math.floor(g.time/60), s=Math.floor(g.time%60);
+  document.getElementById('goStats').innerHTML=
+    `SURVIVED: <b style="color:#8ef">${m}:${s<10?'0':''}${s}</b><br>` +
+    `WAVES REPELLED: ${g.wave}<br>KILLS: ${g.kills}`;
+  setTimeout(()=>document.getElementById('gameover').classList.remove('hidden'),900);
+}
+
+//==================== INPUT ====================
+addEventListener('keydown',e=>{
+  const k=e.key.toLowerCase();
+  if(!game || !game.running){
+    if(k===' '){ e.preventDefault(); startGame(); }
+    return;
+  }
+  if(game.over){ if(k==='r') startGame(); return; }
+  if(game.menuFor){
+    const p=game.menuFor, keys=Object.keys(p.defs);
+    if(k>='1' && k<='4'){ const kk=keys[+k-1];
+      if(kk && p.energy>=p.defs[kk].cost) pickUnit(p,kk); }
+    if(k==='s') skipMenu();
+  }
+});
+addEventListener('pointerdown',()=>{ initAudio(); if(AC&&AC.state==='suspended')AC.resume(); },{once:true});
+
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>

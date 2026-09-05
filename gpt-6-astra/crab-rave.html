@@ -1,0 +1,704 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>CRAB RAVE: ILLEGAL SOCCER</title>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: #080d19; min-height: 100vh;
+    display: grid; place-items: center; overflow: hidden;
+  }
+  canvas {
+    display: block; width: min(100vw, 152.77vh); height: auto;
+    user-select: none;
+  }
+</style>
+<canvas id="game"></canvas>
+<script>
+"use strict";
+const canvas = document.querySelector("canvas");
+const ctx = canvas.getContext("2d");
+const W = 1100, H = 720, AW = 1000, AH = 500;
+const DPR = Math.min(devicePixelRatio || 1, 2);
+canvas.width = W * DPR;
+canvas.height = H * DPR;
+
+const BLUE = "#58e4ff", PINK = "#ff78b6", WHITE = "#edf6ff";
+const GOLD = "#ffd56b", COLORS = [BLUE, PINK];
+const controls = [
+  { up: "KeyW", down: "KeyS", left: "KeyA", right: "KeyD",
+    fire: "KeyF", dash: "KeyG" },
+  { up: "ArrowUp", down: "ArrowDown", left: "ArrowLeft",
+    right: "ArrowRight", fire: "ShiftRight", dash: "Enter" }
+];
+const rules = [
+  { name: "THE ORIGINAL CRIME", tip: "Grab. Charge. Ricochet. Repeat.",
+    radius: 17, balls: 1, bumpers: 2 },
+  { name: "MULTIBALL MAYHEM", tip: "Three balls. First goal wins the point.",
+    radius: 16, balls: 3, bumpers: 2 },
+  { name: "ABSOLUTE UNIT", tip: "One enormous ball. Zero dignity.",
+    radius: 31, balls: 1, bumpers: 2 },
+  { name: "PINBALL PROBLEMS", tip: "Four bumpers. Bank shots encouraged.",
+    radius: 17, balls: 1, bumpers: 4 }
+];
+const keys = new Set();
+const clamp = (n, a, b) => Math.max(a, Math.min(b, n));
+const rand = (a, b) => a + Math.random() * (b - a);
+const length = (x, y) => Math.hypot(x, y);
+const stars = Array.from({ length: 80 }, () => [
+  rand(0, W), rand(0, H), rand(1, 2.5), rand(0, 6)
+]);
+
+let state = "menu", resumeState = "play";
+let players = [], balls = [], bumpers = [], particles = [], waves = [];
+let scores = [0, 0], seconds = 120, round = 0, rule = rules[0];
+let time = 0, wait = 0, shake = 0, winner = null;
+let announcement = "", announceLife = 0, goalMessage = "";
+let audio = null, muted = false, nextHit = 0;
+
+function unlockAudio() {
+  try {
+    if (!audio) audio = new (window.AudioContext || window.webkitAudioContext)();
+    if (audio.state === "suspended") audio.resume().catch(() => {});
+  } catch (_) {}
+}
+function tone(frequency, duration, type = "sine", volume = .04,
+              delay = 0, end = frequency) {
+  if (!audio || muted) return;
+  const start = audio.currentTime + delay;
+  const oscillator = audio.createOscillator(), gain = audio.createGain();
+  oscillator.type = type;
+  oscillator.frequency.setValueAtTime(frequency, start);
+  oscillator.frequency.exponentialRampToValueAtTime(
+    Math.max(20, end), start + duration
+  );
+  gain.gain.setValueAtTime(.001, start);
+  gain.gain.exponentialRampToValueAtTime(volume, start + .008);
+  gain.gain.exponentialRampToValueAtTime(.001, start + duration);
+  oscillator.connect(gain);
+  gain.connect(audio.destination);
+  oscillator.start(start);
+  oscillator.stop(start + duration + .02);
+}
+function sound(kind) {
+  if (kind === "hit") {
+    if (time < nextHit) return;
+    nextHit = time + .055;
+    tone(rand(160, 260), .075, "triangle", .035, 0, 70);
+  }
+  if (kind === "grab") tone(360, .09, "sine", .04, 0, 700);
+  if (kind === "shot") tone(160, .18, "sawtooth", .025, 0, 40);
+  if (kind === "dash") tone(100, .10, "triangle", .04, 0, 30);
+  if (kind === "tackle") tone(70, .19, "square", .025, 0, 25);
+  if (kind === "goal") {
+    [330, 440, 550, 880].forEach((f, i) =>
+      tone(f, .28, "triangle", .055, i * .09)
+    );
+  }
+}
+function burst(x, y, color, count = 18, speed = 230) {
+  for (let i = 0; i < count; i++) {
+    const angle = rand(0, Math.PI * 2), v = rand(40, speed);
+    particles.push({
+      x, y, vx: Math.cos(angle) * v, vy: Math.sin(angle) * v,
+      life: rand(.2, .65), color, size: rand(2, 6)
+    });
+  }
+  if (particles.length > 700) particles.splice(0, particles.length - 700);
+}
+function shout(message) {
+  announcement = message;
+  announceLife = .9;
+}
+function makePlayer(id) {
+  return {
+    id, x: id ? 820 : 180, y: 250, vx: 0, vy: 0, r: 23,
+    ax: id ? -1 : 1, ay: 0, charge: 0, reload: 0,
+    dash: 0, cooldown: 0, stun: 0, safe: 0,
+    previousFire: false, requestDash: false
+  };
+}
+function makeBall(x, y, vx = 0, vy = 0) {
+  return {
+    x, y, vx, vy, r: rule.radius, carrier: -1, lock: .2,
+    last: -1, trail: [], trailClock: 0
+  };
+}
+function held(p) {
+  return balls.find(b => b.carrier === p.id);
+}
+function newRound() {
+  if (round++) {
+    const choices = rules.filter(r => r !== rule);
+    rule = choices[Math.floor(Math.random() * choices.length)];
+  } else rule = rules[0];
+  players = [makePlayer(0), makePlayer(1)];
+  balls = [makeBall(500, 250)];
+  if (rule.balls === 3) {
+    balls.push(makeBall(430, 170, 0, 70), makeBall(570, 330, 0, -70));
+  }
+  particles = [];
+  waves = [];
+  bumpers = [];
+  updateBumpers();
+  announceLife = 0;
+  wait = 1.8;
+  state = "kickoff";
+}
+function newMatch() {
+  scores = [0, 0];
+  seconds = 120;
+  round = 0;
+  winner = null;
+  shake = 0;
+  newRound();
+}
+function pause() {
+  if (state === "paused") state = resumeState;
+  else if (["play", "kickoff", "goal"].includes(state)) {
+    resumeState = state;
+    state = "paused";
+  }
+}
+const usedKeys = new Set([
+  ...controls.flatMap(c => Object.values(c)),
+  "Space", "KeyP", "Escape", "KeyR", "KeyM"
+]);
+addEventListener("keydown", e => {
+  if (e.metaKey || e.ctrlKey || e.altKey) return;
+  if (usedKeys.has(e.code)) e.preventDefault();
+  keys.add(e.code);
+  if (e.repeat) return;
+  unlockAudio();
+  if (e.code === "KeyM") muted = !muted;
+  if (e.code === "KeyR") newMatch();
+  if (e.code === "KeyP" || e.code === "Escape") pause();
+  if (e.code === "Space") {
+    if (state === "menu" || state === "over") newMatch();
+    else if (state === "paused") pause();
+  }
+  if (state === "play") players.forEach(p => {
+    if (e.code === controls[p.id].dash) p.requestDash = true;
+  });
+});
+addEventListener("keyup", e => keys.delete(e.code));
+addEventListener("blur", () => {
+  keys.clear();
+  if (["play", "kickoff", "goal"].includes(state)) pause();
+});
+canvas.addEventListener("pointerdown", () => {
+  unlockAudio();
+  if (state === "menu" || state === "over") newMatch();
+});
+
+function updateBumpers() {
+  const count = rule.bumpers;
+  for (let i = 0; i < count; i++) {
+    let x, y, vx, vy;
+    if (count === 2) {
+      const sign = i ? 1 : -1;
+      x = 500 + sign * Math.sin(time * .85) * 90;
+      y = 250 + sign * 135;
+      vx = sign * Math.cos(time * .85) * 76.5;
+      vy = 0;
+    } else {
+      const sign = i < 2 ? -1 : 1;
+      x = 500 + sign * 155;
+      y = 250 + (i % 2 ? 1 : -1) * 115
+        + sign * Math.sin(time * 1.4) * 32;
+      vx = 0;
+      vy = sign * Math.cos(time * 1.4) * 44.8;
+    }
+    bumpers[i] = { x, y, vx, vy, r: count === 2 ? 29 : 25 };
+  }
+}
+// Resolve a moving circle against another moving circle.
+function bounce(o, c, restitution = .9, boost = 0) {
+  let dx = o.x - c.x, dy = o.y - c.y;
+  let d = length(dx, dy), radius = o.r + c.r;
+  if (d >= radius) return 0;
+  if (d < .001) { dx = 1; dy = 0; d = 1; }
+  const nx = dx / d, ny = dy / d;
+  o.x = c.x + nx * radius;
+  o.y = c.y + ny * radius;
+  const approach = (o.vx - c.vx) * nx + (o.vy - c.vy) * ny;
+  if (approach < 0) {
+    const impulse = -(1 + restitution) * approach + boost;
+    o.vx += nx * impulse;
+    o.vy += ny * impulse;
+    return -approach;
+  }
+  return 0;
+}
+function boundPlayer(p) {
+  if (p.x < p.r || p.x > AW - p.r) p.vx *= -.25;
+  if (p.y < p.r || p.y > AH - p.r) p.vy *= -.25;
+  p.x = clamp(p.x, p.r, AW - p.r);
+  p.y = clamp(p.y, p.r, AH - p.r);
+}
+function shoot(p) {
+  if (p.reload > 0 || p.stun > 0) return;
+  const carried = held(p), power = clamp(p.charge, 0, 1);
+  let connected = false;
+  for (const b of balls) {
+    const dx = b.x - p.x, dy = b.y - p.y, d = length(dx, dy);
+    const facing = (dx * p.ax + dy * p.ay) / Math.max(d, 1);
+    if (b !== carried && (b.carrier !== -1 || d > 103 || facing < .1))
+      continue;
+    if (b === carried) {
+      b.x = p.x + p.ax * (p.r + b.r + 5);
+      b.y = p.y + p.ay * (p.r + b.r + 5);
+    }
+    const speed = (510 + power * 730) / Math.sqrt(b.r / 17);
+    b.carrier = -1;
+    b.vx = p.ax * speed + p.vx * .3;
+    b.vy = p.ay * speed + p.vy * .3;
+    b.last = p.id;
+    b.lock = .20;
+    connected = true;
+    burst(b.x, b.y, COLORS[p.id], 15 + Math.floor(power * 15));
+  }
+  waves.push({
+    x: p.x, y: p.y, angle: Math.atan2(p.ay, p.ax),
+    life: .22, color: COLORS[p.id]
+  });
+  if (connected) {
+    p.vx -= p.ax * (65 + power * 100);
+    p.vy -= p.ay * (65 + power * 100);
+    shake = Math.max(shake, 2 + power * 5);
+    sound("shot");
+    if (power > .85) shout("FULL SEND!");
+  }
+  p.charge = 0;
+  p.reload = .28;
+}
+function tackle(attacker, victim) {
+  const b = held(victim);
+  if (b) {
+    b.carrier = -1;
+    b.x = victim.x;
+    b.y = victim.y;
+    b.vx = attacker.ax * 560;
+    b.vy = attacker.ay * 560;
+    b.lock = .22;
+    b.last = attacker.id;
+    shout("BALL LIBERATED!");
+  } else shout("CRAB COLLISION!");
+  victim.stun = .38;
+  victim.safe = .8;
+  victim.dash = 0;
+  victim.charge = 0;
+  victim.vx = attacker.ax * 510;
+  victim.vy = attacker.ay * 510;
+  burst(victim.x, victim.y, COLORS[victim.id], 28, 340);
+  shake = Math.max(shake, 8);
+  sound("tackle");
+}
+function playerCollision() {
+  const a = players[0], b = players[1];
+  let dx = b.x - a.x, dy = b.y - a.y, d = length(dx, dy);
+  if (d >= a.r + b.r) return;
+  if (d < .001) { dx = 1; dy = 0; d = 1; }
+  const nx = dx / d, ny = dy / d, overlap = (a.r + b.r - d) / 2;
+  a.x -= nx * overlap; a.y -= ny * overlap;
+  b.x += nx * overlap; b.y += ny * overlap;
+  const closing = (b.vx - a.vx) * nx + (b.vy - a.vy) * ny;
+  if (closing < 0) {
+    const j = -closing * .7;
+    a.vx -= nx * j; a.vy -= ny * j;
+    b.vx += nx * j; b.vy += ny * j;
+  }
+  const hitA = a.dash > 0 && b.safe <= 0;
+  const hitB = b.dash > 0 && a.safe <= 0;
+  if (hitA) tackle(a, b);
+  if (hitB) tackle(b, a);
+}
+function goal(id, ball) {
+  scores[id]++;
+  goalMessage = ball.last === 1 - id ? "SPECTACULAR OWN GOAL!" :
+    ["ABSOLUTELY LEGAL.", "THE NET HAD A FAMILY.", "CERTIFIED CRAB MOMENT.",
+     "CALCULATED. PROBABLY."][Math.floor(Math.random() * 4)];
+  announcement = id === 0 ? "BLUE SCORES!" : "PINK SCORES!";
+  burst(clamp(ball.x, 10, 990), ball.y, COLORS[id], 130, 600);
+  sound("goal");
+  shake = 17;
+  wait = 1.6;
+  state = "goal";
+  if (scores[id] >= 7 || seconds <= 0) winner = id;
+}
+function checkGoal(b) {
+  if (b.y > 150 && b.y < 350) {
+    if (b.x < -b.r) { goal(1, b); return true; }
+    if (b.x > AW + b.r) { goal(0, b); return true; }
+  }
+  return false;
+}
+function update(dt) {
+  if (state === "paused") return;
+  time += dt;
+  shake = Math.max(0, shake - dt * 24);
+  announceLife = Math.max(0, announceLife - dt);
+  for (const p of particles) {
+    p.life -= dt; p.x += p.vx * dt; p.y += p.vy * dt;
+    p.vx *= Math.exp(-3 * dt); p.vy *= Math.exp(-3 * dt);
+  }
+  particles = particles.filter(p => p.life > 0);
+  for (const w of waves) w.life -= dt;
+  waves = waves.filter(w => w.life > 0);
+  if (state === "menu" || state === "over") return;
+  updateBumpers();
+
+  if (state === "kickoff" || state === "goal") {
+    wait -= dt;
+    if (wait <= 0) {
+      if (state === "kickoff") { state = "play"; shout("GO!"); }
+      else if (winner !== null) state = "over";
+      else newRound();
+    }
+    return;
+  }
+  if (seconds > 0) {
+    seconds = Math.max(0, seconds - dt);
+    if (seconds === 0 && scores[0] !== scores[1]) {
+      winner = scores[0] > scores[1] ? 0 : 1;
+      state = "over";
+      sound("goal");
+      return;
+    }
+    if (seconds === 0) shout("GOLDEN GOAL!");
+  }
+
+  for (const p of players) {
+    const c = controls[p.id];
+    for (const property of ["reload", "cooldown", "stun", "safe", "dash"])
+      p[property] = Math.max(0, p[property] - dt);
+    let mx = Number(keys.has(c.right)) - Number(keys.has(c.left));
+    let my = Number(keys.has(c.down)) - Number(keys.has(c.up));
+    const moving = length(mx, my);
+    if (moving) { mx /= moving; my /= moving; }
+    if (moving && p.stun <= 0 && p.dash <= 0) {
+      p.ax = mx; p.ay = my;
+    }
+    if (p.requestDash && p.cooldown <= 0 && p.stun <= 0) {
+      p.vx = p.ax * 780; p.vy = p.ay * 780;
+      p.dash = .17; p.cooldown = .95;
+      burst(p.x, p.y, COLORS[p.id], 12);
+      sound("dash");
+    }
+    p.requestDash = false;
+    if (p.dash <= 0) {
+      const acceleration = held(p) ? 1550 : 2350;
+      if (p.stun <= 0) {
+        p.vx += mx * acceleration * dt;
+        p.vy += my * acceleration * dt;
+      }
+      const drag = Math.exp(-(p.stun > 0 ? 4 : 8) * dt);
+      p.vx *= drag; p.vy *= drag;
+    } else burst(p.x - p.ax * 20, p.y - p.ay * 20, COLORS[p.id], 1, 65);
+    p.x += p.vx * dt; p.y += p.vy * dt;
+    for (const bumper of bumpers) bounce(p, bumper, .5, 40);
+    boundPlayer(p);
+
+    const fire = keys.has(c.fire);
+    if (fire && p.reload <= 0 && p.stun <= 0)
+      p.charge = Math.min(1.15, p.charge + dt);
+    if ((p.previousFire && !fire) || (held(p) && p.charge >= 1.15))
+      shoot(p);
+    if (!fire) p.charge = 0;
+    p.previousFire = fire;
+  }
+  playerCollision();
+  players.forEach(boundPlayer);
+
+  for (const b of balls) {
+    b.lock = Math.max(0, b.lock - dt);
+    if (b.carrier !== -1) {
+      const p = players[b.carrier];
+      b.x = p.x + p.ax * (p.r + b.r + 5);
+      b.y = p.y + p.ay * (p.r + b.r + 5);
+      b.vx = p.vx; b.vy = p.vy;
+      b.trail = [];
+      if (checkGoal(b)) return;
+      continue;
+    }
+    for (const p of players) {
+      const dx = p.x - b.x, dy = p.y - b.y, d = length(dx, dy);
+      const facing = (-dx * p.ax - dy * p.ay) / Math.max(d, 1);
+      if (keys.has(controls[p.id].fire) && !held(p) && p.reload <= 0
+          && p.stun <= 0 && p.dash <= 0 && b.lock <= 0
+          && d < 135 && facing > -.25) {
+        b.vx += dx / Math.max(d, 1) * 1350 * dt;
+        b.vy += dy / Math.max(d, 1) * 1350 * dt;
+        if (d < p.r + b.r + 15) {
+          b.carrier = p.id;
+          b.last = p.id;
+          sound("grab");
+          burst(b.x, b.y, COLORS[p.id], 10, 120);
+          break;
+        }
+      }
+    }
+    if (b.carrier !== -1) continue;
+    const speed = length(b.vx, b.vy);
+    if (speed > 1400) { b.vx *= 1400 / speed; b.vy *= 1400 / speed; }
+    b.x += b.vx * dt; b.y += b.vy * dt;
+    b.vx *= Math.exp(-.23 * dt); b.vy *= Math.exp(-.23 * dt);
+
+    for (const bumper of bumpers) {
+      if (bounce(b, bumper, 1.06, 140) > 30) {
+        burst(b.x, b.y, GOLD, 9, 180);
+        sound("hit");
+        shake = Math.max(shake, 2.5);
+      }
+    }
+    for (const p of players) {
+      if (bounce(b, p, .88, p.dash > 0 ? 190 : 0) > 10) {
+        b.last = p.id;
+        sound("hit");
+      }
+    }
+    for (const x of [0, AW]) for (const y of [150, 350])
+      if (bounce(b, { x, y, vx: 0, vy: 0, r: 9 }, .95) > 50) sound("hit");
+
+    if (b.y < b.r || b.y > AH - b.r) {
+      b.y = clamp(b.y, b.r, AH - b.r);
+      b.vy *= -.95;
+      sound("hit");
+    }
+    if (!(b.y > 150 && b.y < 350) && (b.x < b.r || b.x > AW - b.r)) {
+      b.x = clamp(b.x, b.r, AW - b.r);
+      b.vx *= -.95;
+      sound("hit");
+    }
+    if (checkGoal(b)) return;
+    b.trailClock += dt;
+    if (b.trailClock > .022) {
+      b.trailClock = 0;
+      b.trail.push({ x: b.x, y: b.y });
+      if (b.trail.length > 10) b.trail.shift();
+    }
+  }
+}
+
+function circle(x, y, r, fill, stroke = null, width = 2) {
+  ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2);
+  if (fill) { ctx.fillStyle = fill; ctx.fill(); }
+  if (stroke) { ctx.strokeStyle = stroke; ctx.lineWidth = width; ctx.stroke(); }
+}
+function line(x1, y1, x2, y2, color, width = 2) {
+  ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2);
+  ctx.strokeStyle = color; ctx.lineWidth = width; ctx.stroke();
+}
+function text(message, x, y, size = 20, color = WHITE, align = "center") {
+  ctx.fillStyle = color;
+  ctx.font = `800 ${size}px system-ui, sans-serif`;
+  ctx.textAlign = align; ctx.textBaseline = "middle";
+  ctx.fillText(message, x, y);
+}
+function arc(x, y, radius, start, end, color, width = 4) {
+  ctx.beginPath(); ctx.arc(x, y, radius, start, end);
+  ctx.strokeStyle = color; ctx.lineWidth = width; ctx.stroke();
+}
+function drawPlayer(p) {
+  const color = COLORS[p.id], angle = Math.atan2(p.ay, p.ax);
+  circle(p.x, p.y + 7, p.r + 4, "#0005");
+  ctx.save();
+  ctx.translate(p.x, p.y); ctx.rotate(angle);
+  if (p.safe > 0 && Math.sin(time * 40) > 0) ctx.globalAlpha = .5;
+  for (const side of [-1, 1]) {
+    for (let j = 0; j < 3; j++) {
+      const wiggle = Math.sin(time * 25 + j) *
+        Math.min(5, length(p.vx, p.vy) / 60);
+      line(-13 + j * 10, side * 14, -20 + j * 12 + wiggle,
+           side * 30, color, 4);
+    }
+    line(9, side * 12, 23, side * 24, color, 5);
+    arc(25, side * 23, 10 + p.charge * 4, .5, 5.5, color, 6);
+  }
+  circle(0, 0, p.r, color);
+  circle(-5, 0, 12, "#ffffff25");
+  for (const side of [-1, 1]) {
+    circle(9, side * 8, 6, WHITE);
+    circle(12, side * 8, 3, "#101a30");
+  }
+  ctx.globalAlpha = 1;
+  ctx.restore();
+  circle(p.x, p.y, 32, null, "#ffffff15");
+  arc(p.x, p.y, 32, -Math.PI / 2,
+      -Math.PI / 2 + Math.PI * 2 * (1 - p.cooldown / .95), color, 3);
+  if (p.charge > 0) {
+    arc(p.x, p.y, 39, -Math.PI / 2,
+        -Math.PI / 2 + Math.PI * 2 * Math.min(1, p.charge), GOLD, 4);
+    const reach = 62 + p.charge * 90;
+    ctx.setLineDash([6, 9]);
+    line(p.x + p.ax * 45, p.y + p.ay * 45,
+         p.x + p.ax * reach, p.y + p.ay * reach, color, 3);
+    ctx.setLineDash([]);
+  }
+  if (p.stun > 0) text("✦ ✦ ✦", p.x, p.y - 47, 18, GOLD);
+}
+function drawBall(b) {
+  const color = b.last < 0 ? GOLD : COLORS[b.last];
+  if (b.carrier < 0) b.trail.forEach((point, i) => {
+    ctx.globalAlpha = i / 25;
+    circle(point.x, point.y, b.r * (.4 + i / 18), color);
+  });
+  ctx.globalAlpha = 1;
+  circle(b.x, b.y + 6, b.r + 2, "#0005");
+  circle(b.x, b.y, b.r + 3, null, color, 2);
+  circle(b.x, b.y, b.r, WHITE);
+  ctx.save();
+  ctx.translate(b.x, b.y);
+  ctx.rotate(time * (2 + length(b.vx, b.vy) / 130));
+  ctx.beginPath();
+  for (let i = 0; i < 6; i++) {
+    const a = i * Math.PI / 3;
+    ctx.lineTo(Math.cos(a) * b.r * .51, Math.sin(a) * b.r * .51);
+  }
+  ctx.closePath(); ctx.fillStyle = "#26384d"; ctx.fill();
+  for (let i = 0; i < 6; i++) {
+    const a = i * Math.PI / 3;
+    line(Math.cos(a) * b.r * .5, Math.sin(a) * b.r * .5,
+         Math.cos(a) * b.r, Math.sin(a) * b.r, "#26384d", 2);
+  }
+  ctx.restore();
+}
+function drawArena() {
+  ctx.fillStyle = "#11243a"; ctx.fillRect(0, 0, AW, AH);
+  for (let i = 0; i < 10; i += 2) {
+    ctx.fillStyle = "#ffffff03"; ctx.fillRect(i * 100, 0, 100, AH);
+  }
+  for (let x = 25; x < AW; x += 50)
+    for (let y = 25; y < AH; y += 50) circle(x, y, 1, "#ffffff15");
+  line(500, 0, 500, AH, "#ffffff15");
+  circle(500, 250, 90, null, "#ffffff15");
+  for (const id of [0, 1]) {
+    const x = id ? AW : 0, color = COLORS[id];
+    ctx.fillStyle = id ? "#ff78b61c" : "#58e4ff1c";
+    ctx.fillRect(id ? AW : -28, 150, 28, 200);
+    for (let y = 150; y <= 350; y += 20)
+      line(x, y, x + (id ? 28 : -28), y, color + "50", 1);
+    line(x, 0, x, 150, color, 5);
+    line(x, 350, x, AH, color, 5);
+    for (const y of [150, 350]) circle(x, y, 9, WHITE);
+    arc(x, 250, 106, id ? Math.PI / 2 : -Math.PI / 2,
+        id ? Math.PI * 1.5 : Math.PI / 2, color + "35", 2);
+  }
+  line(0, 0, AW, 0, "#6984a0", 4);
+  line(0, AH, AW, AH, "#6984a0", 4);
+  for (const b of bumpers) {
+    circle(b.x, b.y + 5, b.r + 6, "#0005");
+    circle(b.x, b.y, b.r + 5, "#473d36", GOLD, 2);
+    circle(b.x, b.y, b.r - 2, "#ffc65f");
+    circle(b.x, b.y, b.r - 10, "#785533");
+    text("×", b.x, b.y - 1, 27, GOLD);
+  }
+  for (const w of waves) {
+    ctx.globalAlpha = w.life / .22;
+    arc(w.x, w.y, 35 + (1 - w.life / .22) * 80,
+        w.angle - .8, w.angle + .8, w.color, 6);
+  }
+  ctx.globalAlpha = 1;
+  players.forEach(drawPlayer);
+  balls.forEach(drawBall);
+  for (const p of particles) {
+    ctx.globalAlpha = Math.min(1, p.life * 3);
+    circle(p.x, p.y, p.size, p.color);
+  }
+  ctx.globalAlpha = 1;
+}
+function veil() {
+  ctx.fillStyle = "#070e1de8"; ctx.fillRect(0, 0, W, H);
+}
+function render() {
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  ctx.fillStyle = "#090f1e"; ctx.fillRect(0, 0, W, H);
+  for (const [x, y, r, phase] of stars) {
+    ctx.globalAlpha = .18 + .12 * Math.sin(time + phase);
+    circle(x, y, r, WHITE);
+  }
+  ctx.globalAlpha = 1;
+  ctx.save();
+  ctx.translate(50 + rand(-shake, shake), 125 + rand(-shake, shake));
+  drawArena();
+  ctx.restore();
+
+  text("BLUE →", 65, 35, 22, BLUE, "left");
+  text(scores[0], 250, 48, 57, BLUE);
+  text("← PINK", 1035, 35, 22, PINK, "right");
+  text(scores[1], 850, 48, 57, PINK);
+  const s = Math.ceil(seconds);
+  const timer = seconds <= 0 ? "GOLDEN GOAL" :
+    `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+  text(timer, 550, 40, seconds <= 0 ? 27 : 38, GOLD);
+  text("FIRST TO 7", 550, 76, 13, "#8cabc4");
+  text(rule.name, 550, 105, 17, GOLD);
+
+  text("WASD · hold F · dash G", 50, 653, 17, BLUE, "left");
+  text("Arrows · hold Right Shift · dash Enter", 1050, 653, 17, PINK, "right");
+  text(rule.tip, 550, 686, 16, "#adc1d7");
+  text(`P pause   R restart   M ${muted ? "unmute" : "mute"}`,
+       550, 710, 12, "#72879f");
+
+  if (state === "play" && announceLife > 0) {
+    ctx.globalAlpha = Math.min(1, announceLife * 3);
+    text(announcement, 550, 165, 28, GOLD);
+    ctx.globalAlpha = 1;
+  }
+  if (state === "kickoff") {
+    text(rule.name, 550, 285, 31, GOLD);
+    text(Math.ceil(wait), 550, 365, 100);
+    text(rule.tip, 550, 455, 20);
+  }
+  if (state === "goal") {
+    ctx.fillStyle = "#081122a0"; ctx.fillRect(130, 255, 840, 205);
+    const id = announcement.startsWith("BLUE") ? 0 : 1;
+    text(announcement, 550, 315, 58, COLORS[id]);
+    text(goalMessage, 550, 385, 24, GOLD);
+  }
+  if (state === "paused") {
+    veil();
+    text("CRABS ON BREAK", 550, 310, 53, GOLD);
+    text("P or Space to resume", 550, 385, 24);
+  }
+  if (state === "over") {
+    veil();
+    const name = winner === 0 ? "BLUE" : "PINK";
+    text(`${name} IS THE BIG CRAB`, 550, 265, 47, COLORS[winner]);
+    text(`${scores[0]}  :  ${scores[1]}`, 550, 355, 85);
+    text("Friendship status: under review.", 550, 435, 23, GOLD);
+    text("SPACE for the rematch", 550, 520, 27);
+  }
+  if (state === "menu") {
+    veil();
+    text("CRAB RAVE", 550, 132, 91, GOLD);
+    text("I L L E G A L   S O C C E R", 550, 203, 25);
+    text("Rocket crabs. Stolen balls. Extremely questionable sportsmanship.",
+         550, 260, 18, "#adc1d7");
+    text("1   MOVE to aim. HOLD your shot key to grab a nearby ball.",
+         550, 326, 21);
+    text("2   RELEASE to shoot. Hold longer for a monster shot.",
+         550, 371, 21);
+    text("3   DASH into the other crab to knock their ball loose.",
+         550, 416, 21);
+    text("BLUE: WASD / F / G", 295, 490, 23, BLUE);
+    text("PINK: Arrows / Right Shift / Enter", 785, 490, 21, PINK);
+    text("Every goal changes the rules. Own goals absolutely count.",
+         550, 544, 19, GOLD);
+    text("SPACE TO COMMIT SPORTS", 550, 617,
+         29 + Math.sin(time * 3), WHITE);
+    text("No mouse needed. Sound on recommended.", 550, 665, 15, "#adc1d7");
+  }
+}
+let previous = performance.now(), accumulator = 0;
+function frame(now) {
+  accumulator += Math.min((now - previous) / 1000, .05);
+  previous = now;
+  while (accumulator >= 1 / 120) {
+    update(1 / 120);
+    accumulator -= 1 / 120;
+  }
+  render();
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>

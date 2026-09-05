@@ -1,0 +1,131 @@
+<!DOCTYPE html><html><head><meta charset="utf-8"><title>SHORT LEASH</title>
+<style>
+html,body{margin:0;background:#0b0e14;display:flex;flex-direction:column;
+align-items:center;color:#9aa4b2;font:14px monospace}
+h1{color:#e6e6e6;letter-spacing:8px;margin:10px 0 4px}
+canvas{border:1px solid #2a3040;border-radius:8px;margin-top:8px}
+</style></head><body>
+<h1>SHORT LEASH</h1>
+<div>P1 red: WASD + E dash &nbsp;|&nbsp; P2 blue: Arrows + . dash
+&nbsp;|&nbsp; R restart &nbsp;|&nbsp; first to 10 — the leash shrinks every point!</div>
+<canvas id="c" width="960" height="560"></canvas>
+<script>
+"use strict";
+const cv=document.getElementById("c"),g=cv.getContext("2d"),W=cv.width,H=cv.height;
+const WIN=10,R=15,keys={};
+let p1,p2,coin,leash,winner,t=0;
+
+addEventListener("keydown",e=>{
+  if(e.key.startsWith("Arrow"))e.preventDefault();
+  keys[e.key.toLowerCase()]=1;
+  if(e.key.toLowerCase()==="r")reset();
+});
+addEventListener("keyup",e=>keys[e.key.toLowerCase()]=0);
+
+function mkP(x,color,k){return{x,y:H/2,vx:0,vy:0,score:0,cd:0,color,k};}
+function reset(){
+  p1=mkP(W*0.3,"#ff5d4d",{u:"w",d:"s",l:"a",r:"d",dash:"e"});
+  p2=mkP(W*0.7,"#4da3ff",{u:"arrowup",d:"arrowdown",l:"arrowleft",
+    r:"arrowright",dash:"."});
+  leash=320;winner=null;spawnCoin();
+}
+function spawnCoin(){
+  for(let i=0;i<50;i++){
+    const x=50+Math.random()*(W-100),y=50+Math.random()*(H-100);
+    if(Math.hypot(x-p1.x,y-p1.y)>130&&Math.hypot(x-p2.x,y-p2.y)>130){
+      coin={x,y};return;
+    }
+  }
+  coin={x:W/2,y:H/2};
+}
+
+function ctl(p,dt){
+  let ax=(keys[p.k.r]?1:0)-(keys[p.k.l]?1:0),
+      ay=(keys[p.k.d]?1:0)-(keys[p.k.u]?1:0);
+  const m=Math.hypot(ax,ay)||1;
+  p.vx+=ax/m*1050*dt;p.vy+=ay/m*1050*dt;
+  p.cd=Math.max(0,p.cd-dt);
+  if(keys[p.k.dash]&&p.cd===0){
+    let dx=ax/m,dy=ay/m;
+    if(!ax&&!ay){const s=Math.hypot(p.vx,p.vy)||1;dx=p.vx/s;dy=p.vy/s;}
+    p.vx+=dx*560;p.vy+=dy*560;p.cd=1.5;
+  }
+  const damp=Math.pow(0.15,dt);p.vx*=damp;p.vy*=damp;
+}
+function tether(dt){
+  const dx=p2.x-p1.x,dy=p2.y-p1.y,d=Math.hypot(dx,dy)||1;
+  if(d>leash){
+    const f=(d-leash)*14,ux=dx/d,uy=dy/d;
+    p1.vx+=ux*f*dt;p1.vy+=uy*f*dt;
+    p2.vx-=ux*f*dt;p2.vy-=uy*f*dt;
+  }
+}
+function bump(){
+  const dx=p2.x-p1.x,dy=p2.y-p1.y,d=Math.hypot(dx,dy)||1;
+  if(d<2*R){
+    const ux=dx/d,uy=dy/d,ov=(2*R-d)/2;
+    p1.x-=ux*ov;p1.y-=uy*ov;p2.x+=ux*ov;p2.y+=uy*ov;
+    const rel=(p2.vx-p1.vx)*ux+(p2.vy-p1.vy)*uy;
+    if(rel<0){p1.vx+=ux*rel;p1.vy+=uy*rel;p2.vx-=ux*rel;p2.vy-=uy*rel;}
+  }
+}
+function walls(p){
+  if(p.x<R){p.x=R;p.vx=Math.abs(p.vx)*0.6;}
+  if(p.x>W-R){p.x=W-R;p.vx=-Math.abs(p.vx)*0.6;}
+  if(p.y<R){p.y=R;p.vy=Math.abs(p.vy)*0.6;}
+  if(p.y>H-R){p.y=H-R;p.vy=-Math.abs(p.vy)*0.6;}
+}
+function update(dt){
+  if(winner)return;
+  ctl(p1,dt);ctl(p2,dt);tether(dt);
+  p1.x+=p1.vx*dt;p1.y+=p1.vy*dt;p2.x+=p2.vx*dt;p2.y+=p2.vy*dt;
+  bump();walls(p1);walls(p2);
+  for(const p of[p1,p2]){
+    if(Math.hypot(p.x-coin.x,p.y-coin.y)<R+12){
+      p.score++;leash=Math.max(70,leash-26);
+      if(p.score>=WIN)winner=p;else spawnCoin();
+      break;
+    }
+  }
+}
+function draw(){
+  g.fillStyle="#0f131c";g.fillRect(0,0,W,H);
+  const d=Math.hypot(p2.x-p1.x,p2.y-p1.y),taut=d>leash;
+  g.strokeStyle=taut?"#ff4444":"#3a4256";g.lineWidth=taut?3:2;
+  g.beginPath();g.moveTo(p1.x,p1.y);
+  if(taut)g.lineTo(p2.x,p2.y);
+  else g.quadraticCurveTo((p1.x+p2.x)/2,(p1.y+p2.y)/2+(leash-d)*0.35,p2.x,p2.y);
+  g.stroke();
+  if(!winner){
+    g.save();g.shadowColor="#ffd54d";g.shadowBlur=18;
+    g.fillStyle="#ffd54d";g.beginPath();
+    g.arc(coin.x,coin.y,10+Math.sin(t*6)*2,0,7);g.fill();g.restore();
+  }
+  for(const p of[p1,p2]){
+    g.fillStyle=p.color;g.beginPath();g.arc(p.x,p.y,R,0,7);g.fill();
+    if(p.cd>0){
+      g.strokeStyle="#ffffff88";g.lineWidth=3;g.beginPath();
+      g.arc(p.x,p.y,R+5,-Math.PI/2,-Math.PI/2+(1-p.cd/1.5)*Math.PI*2);g.stroke();
+    }
+  }
+  g.font="bold 42px monospace";
+  g.fillStyle=p1.color;g.fillText(p1.score,30,55);
+  g.fillStyle=p2.color;g.fillText(p2.score,W-58,55);
+  g.font="14px monospace";g.fillStyle="#5b6575";g.textAlign="center";
+  g.fillText("LEASH "+Math.round(leash),W/2,26);g.textAlign="left";
+  if(winner){
+    g.fillStyle="#000a";g.fillRect(0,0,W,H);
+    g.textAlign="center";g.fillStyle=winner.color;
+    g.font="bold 52px monospace";
+    g.fillText((winner===p1?"RED":"BLUE")+" WINS!",W/2,H/2-10);
+    g.fillStyle="#9aa4b2";g.font="18px monospace";
+    g.fillText("press R for a rematch",W/2,H/2+34);g.textAlign="left";
+  }
+}
+let last=performance.now();
+function loop(now){
+  const dt=Math.min((now-last)/1000,0.033);last=now;t+=dt;
+  update(dt);draw();requestAnimationFrame(loop);
+}
+reset();requestAnimationFrame(loop);
+</script></body></html>

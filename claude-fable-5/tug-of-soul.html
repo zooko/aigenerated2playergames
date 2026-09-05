@@ -1,0 +1,95 @@
+<!DOCTYPE html><html><head><meta charset="utf-8"><title>TUG OF SOUL</title>
+<style>
+html,body{margin:0;background:#0a0c12;display:flex;flex-direction:column;align-items:center;color:#95a0b0;font:13px monospace}
+h1{color:#c9a6ff;letter-spacing:6px;margin:8px 0 2px;text-shadow:0 0 12px #85f}
+p{margin:2px 0;text-align:center}
+canvas{border:1px solid #2a3040;border-radius:8px;margin-top:6px}
+</style></head><body>
+<h1>TUG OF SOUL</h1>
+<p>ONE body. TWO souls. You both steer the SAME blob at the same time - wrestle it onto YOUR coins.</p>
+<p>P1 red: WASD, hold E = OVERDRIVE | P2 blue: Arrows, hold . | skull: LEADER drops a point | first to 8 | R restart</p>
+<canvas id="c" width="960" height="560"></canvas>
+<script>
+"use strict";
+const cv=document.getElementById("c"),g=cv.getContext("2d"),W=960,H=560,keys={},rnd=(a,z)=>a+Math.random()*(z-a);
+let b,P,skull,skullT,winner,flo,shake,t=0,AC=null;
+onkeydown=e=>{if(!AC)AC=new AudioContext();if(e.key.startsWith("Arrow"))e.preventDefault();keys[e.key.toLowerCase()]=1;if(e.key.toLowerCase()=="r")reset();};
+onkeyup=e=>keys[e.key.toLowerCase()]=0;
+function beep(f,d,v=0.12){if(!AC)return;const o=AC.createOscillator(),a=AC.createGain();o.type="square";o.frequency.value=f;
+  a.gain.setValueAtTime(v,AC.currentTime);a.gain.exponentialRampToValueAtTime(.001,AC.currentTime+d);o.connect(a);a.connect(AC.destination);o.start();o.stop(AC.currentTime+d);}
+const spot=()=>({x:rnd(55,W-55),y:rnd(85,H-55)});
+function reset(){
+  b={x:W/2,y:H/2,vx:0,vy:0};flo=[];shake=0;skull=null;skullT=6;winner=null;
+  P=[{c:"#ff5d4d",n:"RED",k:["a","d","w","s","e"],m:1,s:0,coin:spot(),f:0},
+     {c:"#4da3ff",n:"BLUE",k:["arrowleft","arrowright","arrowup","arrowdown","."],m:1,s:0,coin:spot(),f:0}];
+}
+function update(dt){
+  if(winner)return;t+=dt;
+  const pow=900+(P[0].s+P[1].s)*80;
+  for(const p of P){
+    const x=(keys[p.k[1]]?1:0)-(keys[p.k[0]]?1:0),y=(keys[p.k[3]]?1:0)-(keys[p.k[2]]?1:0),m=Math.hypot(x,y)||1;
+    let f=pow;
+    if(keys[p.k[4]]&&p.m>0){f*=2.7;p.m=Math.max(0,p.m-dt/1.2);}else p.m=Math.min(1,p.m+dt/3.5);
+    p.f=(x||y)?f:0;
+    b.vx+=x/m*f*dt;b.vy+=y/m*f*dt;
+  }
+  const dm=Math.pow(0.2,dt);b.vx*=dm;b.vy*=dm;b.x+=b.vx*dt;b.y+=b.vy*dt;
+  if(b.x<18||b.x>W-18){b.x=Math.max(18,Math.min(W-18,b.x));b.vx*=-0.7;}
+  if(b.y<18||b.y>H-18){b.y=Math.max(18,Math.min(H-18,b.y));b.vy*=-0.7;}
+  for(const p of P){
+    if(Math.hypot(b.x-p.coin.x,b.y-p.coin.y)<31){
+      p.s++;flo.push({x:p.coin.x,y:p.coin.y,txt:"+1 "+p.n,c:p.c,a:0});p.coin=spot();shake=6;beep(1100,.07);
+      if(p.s>=8)winner=p;
+    }
+  }
+  skullT-=dt;
+  if(!skull&&skullT<=0)skull={...spot(),life:7};
+  if(skull){
+    skull.life-=dt;
+    if(Math.hypot(b.x-skull.x,b.y-skull.y)<33){
+      const L=P[0].s>P[1].s?P[0]:P[1].s>P[0].s?P[1]:null;
+      if(L){L.s--;flo.push({x:skull.x,y:skull.y,txt:"-1 "+L.n+"!",c:"#ffd54d",a:0});}
+      else flo.push({x:skull.x,y:skull.y,txt:"tied: no souls harmed",c:"#ffd54d",a:0});
+      skull=null;skullT=rnd(4,9);shake=12;beep(120,.3);
+    }else if(skull.life<=0){skull=null;skullT=rnd(4,9);}
+  }
+  for(let i=flo.length-1;i>=0;i--){flo[i].a+=dt;flo[i].y-=30*dt;if(flo[i].a>1)flo.splice(i,1);}
+  shake=Math.max(0,shake-30*dt);
+}
+function draw(){
+  g.save();if(shake)g.translate(rnd(-shake,shake),rnd(-shake,shake));
+  g.fillStyle="#0e1119";g.fillRect(-20,-20,W+40,H+40);
+  g.strokeStyle="#151b26";
+  for(let x=0;x<=W;x+=48){g.beginPath();g.moveTo(x,0);g.lineTo(x,H);g.stroke();}
+  for(let y=0;y<=H;y+=48){g.beginPath();g.moveTo(0,y);g.lineTo(W,y);g.stroke();}
+  for(const p of P){
+    g.save();g.shadowColor=p.c;g.shadowBlur=16;g.fillStyle=p.c;
+    g.beginPath();g.arc(p.coin.x,p.coin.y,11+Math.sin(t*5)*2,0,7);g.fill();g.restore();
+  }
+  g.textAlign="center";
+  if(skull&&(skull.life>1.5||Math.floor(t*8)%2)){g.font="30px monospace";g.fillText("\u{1F480}",skull.x,skull.y+10);}
+  const tot=P[0].f+P[1].f,k=tot?P[1].f/tot:0.5;
+  const col=`rgb(${255+(77-255)*k|0},${93+(163-93)*k|0},${77+(255-77)*k|0})`;
+  g.save();g.shadowColor=col;g.shadowBlur=26;g.fillStyle=col;
+  g.beginPath();g.arc(b.x,b.y,18,0,7);g.fill();g.restore();
+  const ex=b.vx*0.012,ey=b.vy*0.012;g.fillStyle="#fff";
+  g.beginPath();g.arc(b.x-6+ex,b.y-4+ey,3.5,0,7);g.moveTo(b.x+9.5+ex,b.y-4+ey);g.arc(b.x+6+ex,b.y-4+ey,3.5,0,7);g.fill();
+  g.fillStyle="#111";g.beginPath();g.arc(b.x-6+ex*1.4,b.y-4+ey*1.4,1.6,0,7);g.moveTo(b.x+7.6+ex*1.4,b.y-4+ey*1.4);g.arc(b.x+6+ex*1.4,b.y-4+ey*1.4,1.6,0,7);g.fill();
+  g.textAlign="left";g.font="bold 40px monospace";g.fillStyle=P[0].c;g.fillText(P[0].s,28,52);
+  g.fillStyle=P[1].c;g.textAlign="right";g.fillText(P[1].s,W-28,52);g.textAlign="left";
+  g.fillStyle="#1b2230";g.fillRect(28,62,120,8);g.fillRect(W-148,62,120,8);
+  g.fillStyle=P[0].c;g.fillRect(28,62,120*P[0].m,8);
+  g.fillStyle=P[1].c;g.fillRect(W-148+120*(1-P[1].m),62,120*P[1].m,8);
+  g.textAlign="center";g.font="bold 16px monospace";
+  for(const f of flo){g.globalAlpha=1-f.a;g.fillStyle=f.c;g.fillText(f.txt,f.x,f.y);g.globalAlpha=1;}
+  if(winner){
+    g.fillStyle="#000b";g.fillRect(-20,-20,W+40,H+40);
+    g.fillStyle=winner.c;g.font="bold 46px monospace";g.fillText(winner.n+" SOUL CLAIMS THE BODY!",W/2,H/2-12);
+    g.fillStyle="#95a0b0";g.font="17px monospace";g.fillText("press R to reincarnate",W/2,H/2+30);
+  }
+  g.textAlign="left";g.restore();
+}
+let last=performance.now();
+function loop(now){const dt=Math.min((now-last)/1000,0.033);last=now;update(dt);draw();requestAnimationFrame(loop);}
+reset();requestAnimationFrame(loop);
+</script></body></html>
